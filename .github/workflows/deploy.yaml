@@ -1,0 +1,72 @@
+name: Deploy to Azure Arc Server
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: SSH into Cloud Server and Deploy
+        uses: appleboy/ssh-action@v0.1.7
+        with:
+          host: ${{ secrets.CLOUD_SERVER_IP }}
+          username: ${{ secrets.CLOUD_SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e  # Exit on error
+
+            # Define variables
+            APP_DIR="$HOME/myapp"
+            REPO_URL="https://github.com/joshuaombasa/simple-CI-CD-pipeline-for-a-cloud-server.git"
+
+            echo "Checking if repository exists..."
+            if [ ! -d "$APP_DIR/.git" ]; then
+              echo "Repository not found. Cloning fresh copy..."
+              rm -rf "$APP_DIR"
+              git clone "$REPO_URL" "$APP_DIR"
+            else
+              echo "Repository found. Pulling latest changes..."
+              cd "$APP_DIR"
+              git pull origin main
+            fi
+
+            # Set up Python virtual environment
+            echo "Setting up virtual environment..."
+            cd "$APP_DIR"
+            python3 -m venv venv
+            source venv/bin/activate
+            pip install --upgrade pip
+            pip install -r requirements.txt
+
+            # Ensure systemd service exists
+            echo "Checking if myapp.service exists..."
+            if ! systemctl list-units --full -all | grep -Fq "myapp.service"; then
+              echo "Systemd service not found. Creating service..."
+              cat <<EOF | sudo tee /etc/systemd/system/myapp.service
+            [Unit]
+            Description=Flask App
+            After=network.target
+
+            [Service]
+            User=$USER
+            WorkingDirectory=$APP_DIR
+            ExecStart=$APP_DIR/venv/bin/python $APP_DIR/app.py
+            Restart=always
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+              sudo systemctl daemon-reload
+              sudo systemctl enable myapp
+            fi
+
+            # Restart service
+            echo "Restarting myapp service..."
+            sudo systemctl restart myapp
+            sudo systemctl status myapp --no-pager
